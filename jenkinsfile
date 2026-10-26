@@ -3,8 +3,8 @@ pipeline {
     agent any
 
     environment {
-        IMAGE_NAME = 'my-python-app'
-        CONTAINER_NAME = 'my-python-app-container'
+        IMAGE_NAME = 'my-docker-app'
+        CONTAINER_NAME = 'my-docker-app-container'
     }
 
     stages {
@@ -14,25 +14,66 @@ pipeline {
             }
         }
 
+        stage('Check Project Files') {
+            steps {
+                sh '''
+                    echo "Current directory:"
+                    pwd
+
+                    echo "Project files:"
+                    ls -la
+
+                    test -f Dockerfile || {
+                        echo "ERROR: Dockerfile is missing"
+                        exit 1
+                    }
+
+                    test -f requirements.txt || {
+                        echo "ERROR: requirements.txt is missing"
+                        exit 1
+                    }
+
+                    test -f app.py || {
+                        echo "ERROR: app.py is missing"
+                        exit 1
+                    }
+                '''
+            }
+        }
+
         stage('Build Docker Image') {
             steps {
-                sh 'docker build -t my-python-app:${BUILD_NUMBER} .'
-                sh 'docker tag my-python-app:${BUILD_NUMBER} my-python-app:latest'
+                sh '''
+                    docker build --no-cache \
+                        -t ${IMAGE_NAME}:${BUILD_NUMBER} \
+                        -t ${IMAGE_NAME}:latest .
+                '''
             }
         }
 
         stage('Test Docker Image') {
             steps {
                 sh '''
-                    docker run -d --rm \
-                      --name my-python-test \
-                      -p 5001:5000 \
-                      my-python-app:${BUILD_NUMBER}
+                    docker run -d \
+                        --name ${CONTAINER_NAME}-test-${BUILD_NUMBER} \
+                        -p 127.0.0.1:5001:5000 \
+                        ${IMAGE_NAME}:${BUILD_NUMBER}
 
-                    sleep 5
-                    curl --fail http://localhost:5001/
+                    for i in $(seq 1 15); do
+                        if curl --fail --silent \
+                            http://127.0.0.1:5001/; then
+                            echo ""
+                            echo "Application test passed!"
+                            docker rm -f ${CONTAINER_NAME}-test-${BUILD_NUMBER}
+                            exit 0
+                        fi
+                        sleep 2
+                    done
 
-                    docker stop my-python-test
+                    echo "Application test failed"
+                    docker logs ${CONTAINER_NAME}-test-${BUILD_NUMBER} || true
+                    docker rm -f ${CONTAINER_NAME}-test-${BUILD_NUMBER} || true
+                    exit 1
                 '''
             }
         }
@@ -40,15 +81,31 @@ pipeline {
         stage('Deploy') {
             steps {
                 sh '''
-                    docker rm -f my-python-app-container || true
+                    docker rm -f ${CONTAINER_NAME} || true
 
                     docker run -d \
-                      --restart unless-stopped \
-                      --name my-python-app-container \
-                      -p 5000:5000 \
-                      my-python-app:${BUILD_NUMBER}
+                        --restart unless-stopped \
+                        --name ${CONTAINER_NAME} \
+                        -p 5000:5000 \
+                        ${IMAGE_NAME}:${BUILD_NUMBER}
+
+                    docker ps
                 '''
             }
+        }
+    }
+
+    post {
+        success {
+            echo 'SUCCESS: Docker build, test, and deployment completed!'
+        }
+
+        failure {
+            echo 'FAILED: Check Console Output for the first error.'
+        }
+
+        always {
+            echo 'Jenkins pipeline finished.'
         }
     }
 }
